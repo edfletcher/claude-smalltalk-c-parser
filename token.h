@@ -17,6 +17,7 @@ typedef enum {
     TOKEN_CHAR,         /* Character literal */
     TOKEN_STRING,       /* String literal */
     TOKEN_SYMBOL,       /* Symbol literal */
+    TOKEN_HASH_PAREN,   /* #( for array literals */
     
     /* Constants */
     TOKEN_NIL,          /* nil */

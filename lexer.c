@@ -185,6 +185,17 @@ static Token number(Lexer* lexer) {
     
     // Check for decimal point (floating point or scaled decimal)
     if (peek(lexer) == '.') {
+        // In Smalltalk, we treat a trailing period after a number as a statement terminator,
+        // not as a decimal point, if it's followed by whitespace or EOF
+        if (peekNext(lexer) == ' ' || peekNext(lexer) == '\t' || 
+            peekNext(lexer) == '\n' || peekNext(lexer) == '\0') {
+            // Return the integer value without consuming the period
+            Token token = makeToken(lexer, TOKEN_INTEGER);
+            token.value.intValue = strtoll(lexer->start, NULL, 10);
+            if (isNegative) token.value.intValue = -token.value.intValue;
+            return token;
+        }
+        
         advance(lexer); // Skip the decimal point
         
         // Parse the fractional part
@@ -298,10 +309,18 @@ static Token character(Lexer* lexer) {
 }
 
 static Token symbol(Lexer* lexer) {
-    advance(lexer); // Skip the '#'
+    // Remember the current position (to revert in case of errors)
+    const char* startPos = lexer->current;
     
+    // Skip the '#' (already consumed in nextToken)
+    
+    // Handle array literals like #(1 2 3)
+    if (peek(lexer) == '(') {
+        advance(lexer); // Skip the opening parenthesis
+        return makeToken(lexer, TOKEN_HASH_PAREN);
+    }
     // If followed by string literal, it's a #'symbol' syntax
-    if (peek(lexer) == '\'') {
+    else if (peek(lexer) == '\'') {
         advance(lexer); // Skip the opening quote
         
         while (peek(lexer) != '\'' && !isAtEnd(lexer)) {
@@ -323,11 +342,14 @@ static Token symbol(Lexer* lexer) {
         }
         
         advance(lexer); // Closing apostrophe
-    } else {
+    } 
+    else {
         // Otherwise it's a normal symbol (#symbol)
         if (!(isalpha(peek(lexer)) || peek(lexer) == '_' || 
               strchr("~!@%&*-+=|\\<>,?/", peek(lexer)) != NULL)) {
-            return errorToken(lexer, "Expected identifier or binary selector after '#'.");
+            // Invalid character after #, revert and return an error
+            lexer->current = startPos;
+            return errorToken(lexer, "Expected identifier, binary selector, single quote, or opening parenthesis after '#'.");
         }
         
         if (isalpha(peek(lexer)) || peek(lexer) == '_') {
@@ -418,7 +440,10 @@ Token nextToken(Lexer* lexer) {
         case '.': return makeToken(lexer, TOKEN_PERIOD);
         case ';': return makeToken(lexer, TOKEN_SEMICOLON);
         case '|': return makeToken(lexer, TOKEN_PIPE);
-        case '#': return symbol(lexer);
+        case '#':
+            // Remember current position for the symbol token
+            lexer->start = lexer->current - 1; // -1 to include the # character
+            return symbol(lexer);
         case '$': return character(lexer);
         case '\'': return string(lexer);
         case ':':
@@ -430,21 +455,20 @@ Token nextToken(Lexer* lexer) {
         case '_': return makeToken(lexer, TOKEN_UNDERSCORE);
         
         // Binary selectors
-        case '~':
-        case '!':
-        case '@':
-        case '%':
-        case '&':
-        case '*':
-        case '-':
-        case '+':
-        case '=':
-        case '\\':
-        case '<':
-        case '>':
-        case '?':
-        case '/':
-            return binarySelector(lexer);
+        case '~': return makeToken(lexer, TOKEN_BINARY_SELECTOR);
+        case '!': return makeToken(lexer, TOKEN_BINARY_SELECTOR);
+        case '@': return makeToken(lexer, TOKEN_BINARY_SELECTOR);
+        case '%': return makeToken(lexer, TOKEN_BINARY_SELECTOR);
+        case '&': return makeToken(lexer, TOKEN_BINARY_SELECTOR);
+        case '*': return makeToken(lexer, TOKEN_STAR);
+        case '-': return makeToken(lexer, TOKEN_MINUS);
+        case '+': return makeToken(lexer, TOKEN_PLUS);
+        case '=': return makeToken(lexer, TOKEN_EQUAL);
+        case '\\': return makeToken(lexer, TOKEN_BACKSLASH);
+        case '<': return makeToken(lexer, TOKEN_LESS);
+        case '>': return makeToken(lexer, TOKEN_GREATER);
+        case '?': return makeToken(lexer, TOKEN_QUESTION);
+        case '/': return makeToken(lexer, TOKEN_SLASH);
     }
     
     return errorToken(lexer, "Unexpected character.");

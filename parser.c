@@ -29,6 +29,8 @@ static int check(Parser* parser, TokenType type) {
 
 static int match(Parser* parser, TokenType type) {
     if (!check(parser, type)) return 0;
+    // Debug to help diagnose issues with matching tokens
+    printf("Matching token type: %d\n", type);
     advance(parser);
     return 1;
 }
@@ -51,8 +53,6 @@ void parserErrorAtCurrent(Parser* parser, const char* message) {
     parser->hadError = 1;
 }
 
-// Removed unused synchronize function
-
 static char* extractTokenString(Token token) {
     char* str = (char*)malloc(token.length + 1);
     if (str == NULL) return NULL;
@@ -68,12 +68,12 @@ static ASTNode* expression(Parser* parser);
 static ASTNode* statement(Parser* parser);
 static ASTNode* blockBody(Parser* parser);
 static ASTNode* primary(Parser* parser);
-static ASTNode* parseKeywordMessage(Parser* parser, ASTNode* receiver);
-static ASTNode* parseBinaryMessage(Parser* parser, ASTNode* receiver);
-static ASTNode* parseUnaryMessage(Parser* parser, ASTNode* receiver);
 static ASTNode* parseMessageExpression(Parser* parser);
 
 static ASTNode* primary(Parser* parser) {
+    // Debug message to track token processing
+    printf("Processing primary with token type: %d\n", parser->current.type);
+    
     if (match(parser, TOKEN_LEFT_PAREN)) {
         ASTNode* expr = expression(parser);
         consume(parser, TOKEN_RIGHT_PAREN, "Expected ')' after expression.");
@@ -82,7 +82,6 @@ static ASTNode* primary(Parser* parser) {
     
     if (match(parser, TOKEN_LEFT_BRACKET)) {
         // Parse a block
-        // Block nodes are created at the end of this block parsing section
         
         // Parse parameters if present
         char** parameters = NULL;
@@ -168,7 +167,6 @@ static ASTNode* primary(Parser* parser) {
     
     if (match(parser, TOKEN_LEFT_BRACE)) {
         // Parse an array expression
-        // Array expression nodes are created at the end of this array parsing section
         
         ASTNode** expressions = NULL;
         int expressionCount = 0;
@@ -206,6 +204,84 @@ static ASTNode* primary(Parser* parser) {
         
         return createArrayExpressionNode(expressions, expressionCount, 
                                     parser->previous.line, parser->previous.column);
+    }
+    
+    // Handle array literals like #(1 2 3)
+    if (match(parser, TOKEN_HASH_PAREN)) {
+        ASTNode** elements = NULL;
+        int elementCount = 0;
+        
+        if (!check(parser, TOKEN_RIGHT_PAREN)) {
+            elements = (ASTNode**)malloc(sizeof(ASTNode*) * 8); // Initial capacity
+            if (elements == NULL) {
+                parserError(parser, "Out of memory.");
+                return NULL;
+            }
+            
+            // Parse array elements
+            do {
+                // Array literals can contain: integers, floats, strings, characters, and symbols
+                if (match(parser, TOKEN_INTEGER)) {
+                    elements[elementCount++] = createIntegerLiteral(
+                        parser->previous.value.intValue,
+                        parser->previous.line, parser->previous.column);
+                } else if (match(parser, TOKEN_FLOAT)) {
+                    elements[elementCount++] = createFloatLiteral(
+                        parser->previous.value.floatValue,
+                        parser->previous.line, parser->previous.column);
+                } else if (match(parser, TOKEN_STRING)) {
+                    char* str = extractTokenString(parser->previous);
+                    // Remove the surrounding quotes
+                    if (str[0] == '\'' && str[strlen(str) - 1] == '\'') {
+                        memmove(str, str + 1, strlen(str) - 2);
+                        str[strlen(str) - 2] = '\0';
+                    }
+                    elements[elementCount++] = createStringLiteral(str, 
+                        parser->previous.line, parser->previous.column);
+                } else if (match(parser, TOKEN_CHAR)) {
+                    elements[elementCount++] = createCharacterLiteral(
+                        parser->previous.value.charValue,
+                        parser->previous.line, parser->previous.column);
+                } else if (match(parser, TOKEN_SYMBOL)) {
+                    char* str = extractTokenString(parser->previous);
+                    // Remove the # prefix
+                    if (str[0] == '#') {
+                        memmove(str, str + 1, strlen(str));
+                    }
+                    elements[elementCount++] = createSymbolLiteral(str,
+                        parser->previous.line, parser->previous.column);
+                } else if (match(parser, TOKEN_IDENTIFIER)) {
+                    // For keyword literals
+                    char* str = extractTokenString(parser->previous);
+                    elements[elementCount++] = createSymbolLiteral(str,
+                        parser->previous.line, parser->previous.column);
+                } else {
+                    parserError(parser, "Expected literal value in array literal.");
+                    for (int i = 0; i < elementCount; i++) freeASTNode(elements[i]);
+                    free(elements);
+                    return NULL;
+                }
+                
+                // Grow the elements array if needed
+                if (elementCount % 8 == 0) {
+                    ASTNode** newElems = (ASTNode**)realloc(elements, sizeof(ASTNode*) * (elementCount + 8));
+                    if (newElems == NULL) {
+                        for (int i = 0; i < elementCount; i++) freeASTNode(elements[i]);
+                        free(elements);
+                        parserError(parser, "Out of memory.");
+                        return NULL;
+                    }
+                    elements = newElems;
+                }
+                
+                // Elements are separated by whitespace, no need for any separator token
+            } while (!check(parser, TOKEN_RIGHT_PAREN) && !check(parser, TOKEN_EOF));
+        }
+        
+        consume(parser, TOKEN_RIGHT_PAREN, "Expected ')' after array literal elements.");
+        
+        return createArrayLiteral(elements, elementCount,
+                              parser->previous.line, parser->previous.column);
     }
     
     // Check for literals and variables
@@ -273,319 +349,187 @@ static ASTNode* primary(Parser* parser) {
     return NULL;
 }
 
-static ASTNode* parseUnaryMessage(Parser* parser, ASTNode* receiver) {
-    if (match(parser, TOKEN_IDENTIFIER)) {
-        char* selector = extractTokenString(parser->previous);
-        return createUnaryMessageNode(receiver, selector, 
-                                    parser->previous.line, parser->previous.column);
-    }
-    
-    return receiver;
-}
-
-static ASTNode* parseBinaryMessage(Parser* parser, ASTNode* receiver) {
-    // Parse binary selectors
-    if (match(parser, TOKEN_BINARY_SELECTOR) || 
-        match(parser, TOKEN_PLUS) || match(parser, TOKEN_MINUS) || 
-        match(parser, TOKEN_STAR) || match(parser, TOKEN_SLASH) ||
-        match(parser, TOKEN_LESS) || match(parser, TOKEN_GREATER) ||
-        match(parser, TOKEN_EQUAL) || match(parser, TOKEN_AT) ||
-        match(parser, TOKEN_COMMA) || match(parser, TOKEN_TILDE) ||
-        match(parser, TOKEN_PERCENT) || match(parser, TOKEN_AMPERSAND) ||
-        match(parser, TOKEN_QUESTION) || match(parser, TOKEN_EXCLAMATION) ||
-        match(parser, TOKEN_BACKSLASH)) {
-        
-        char* selector = extractTokenString(parser->previous);
-        ASTNode* argument = primary(parser);
-        
-        // Parse any unary messages sent to the argument
-        while (check(parser, TOKEN_IDENTIFIER) && 
-               parser->current.type != TOKEN_COLON) {
-            argument = parseUnaryMessage(parser, argument);
-        }
-        
-        return createBinaryMessageNode(receiver, selector, argument, 
-                                     parser->previous.line, parser->previous.column);
-    }
-    
-    return receiver;
-}
-
-static ASTNode* parseKeywordMessage(Parser* parser, ASTNode* receiver) {
-    if (check(parser, TOKEN_KEYWORD)) {
-        // Parse keyword selectors and their arguments
-        char selectorBuffer[256] = {0}; // Buffer for building the full selector
-        ASTNode** arguments = (ASTNode**)malloc(sizeof(ASTNode*) * 8); // Initial capacity
-        if (arguments == NULL) {
-            parserError(parser, "Out of memory.");
-            return NULL;
-        }
-        
-        int argumentCount = 0;
-        
-        // First keyword and argument
-        advance(parser); // Consume the keyword
-        strncat(selectorBuffer, parser->previous.start, parser->previous.length);
-        
-        // Parse the argument
-        ASTNode* argument = primary(parser);
-        
-        // Parse any unary messages sent to the argument
-        while (check(parser, TOKEN_IDENTIFIER) && 
-               parser->current.type != TOKEN_COLON) {
-            argument = parseUnaryMessage(parser, argument);
-        }
-        
-        // Parse any binary messages sent to the argument
-        while (check(parser, TOKEN_BINARY_SELECTOR) || 
-               check(parser, TOKEN_PLUS) || check(parser, TOKEN_MINUS) || 
-               check(parser, TOKEN_STAR) || check(parser, TOKEN_SLASH) ||
-               check(parser, TOKEN_LESS) || check(parser, TOKEN_GREATER) ||
-               check(parser, TOKEN_EQUAL) || check(parser, TOKEN_AT) ||
-               check(parser, TOKEN_COMMA) || check(parser, TOKEN_TILDE) ||
-               check(parser, TOKEN_PERCENT) || check(parser, TOKEN_AMPERSAND) ||
-               check(parser, TOKEN_QUESTION) || check(parser, TOKEN_EXCLAMATION) ||
-               check(parser, TOKEN_BACKSLASH)) {
-            argument = parseBinaryMessage(parser, argument);
-        }
-        
-        arguments[argumentCount++] = argument;
-        
-        // Additional keywords and arguments
-        while (check(parser, TOKEN_KEYWORD)) {
-            advance(parser); // Consume the keyword
-            strncat(selectorBuffer, parser->previous.start, parser->previous.length);
-            
-            // Parse the argument
-            argument = primary(parser);
-            
-            // Parse any unary messages sent to the argument
-            while (check(parser, TOKEN_IDENTIFIER) && 
-                   parser->current.type != TOKEN_COLON) {
-                argument = parseUnaryMessage(parser, argument);
-            }
-            
-            // Parse any binary messages sent to the argument
-            while (check(parser, TOKEN_BINARY_SELECTOR) || 
-                   check(parser, TOKEN_PLUS) || check(parser, TOKEN_MINUS) || 
-                   check(parser, TOKEN_STAR) || check(parser, TOKEN_SLASH) ||
-                   check(parser, TOKEN_LESS) || check(parser, TOKEN_GREATER) ||
-                   check(parser, TOKEN_EQUAL) || check(parser, TOKEN_AT) ||
-                   check(parser, TOKEN_COMMA) || check(parser, TOKEN_TILDE) ||
-                   check(parser, TOKEN_PERCENT) || check(parser, TOKEN_AMPERSAND) ||
-                   check(parser, TOKEN_QUESTION) || check(parser, TOKEN_EXCLAMATION) ||
-                   check(parser, TOKEN_BACKSLASH)) {
-                argument = parseBinaryMessage(parser, argument);
-            }
-            
-            // Grow the arguments array if needed
-            if (argumentCount % 8 == 0) {
-                ASTNode** newArgs = (ASTNode**)realloc(arguments, sizeof(ASTNode*) * (argumentCount + 8));
-                if (newArgs == NULL) {
-                    for (int i = 0; i < argumentCount; i++) freeASTNode(arguments[i]);
-                    free(arguments);
-                    parserError(parser, "Out of memory.");
-                    return NULL;
-                }
-                arguments = newArgs;
-            }
-            
-            arguments[argumentCount++] = argument;
-        }
-        
-        return createKeywordMessageNode(receiver, selectorBuffer, arguments, argumentCount, 
-                                      parser->previous.line, parser->previous.column);
-    }
-    
-    return receiver;
-}
-
 static ASTNode* parseMessageExpression(Parser* parser) {
     ASTNode* receiver = primary(parser);
     
-    // Parse any unary messages
-    while (check(parser, TOKEN_IDENTIFIER) && 
-           parser->current.type != TOKEN_COLON) {
-        receiver = parseUnaryMessage(parser, receiver);
-    }
-    
-    // Parse any binary messages
-    while (check(parser, TOKEN_BINARY_SELECTOR) || 
-           check(parser, TOKEN_PLUS) || check(parser, TOKEN_MINUS) || 
-           check(parser, TOKEN_STAR) || check(parser, TOKEN_SLASH) ||
-           check(parser, TOKEN_LESS) || check(parser, TOKEN_GREATER) ||
-           check(parser, TOKEN_EQUAL) || check(parser, TOKEN_AT) ||
-           check(parser, TOKEN_COMMA) || check(parser, TOKEN_TILDE) ||
-           check(parser, TOKEN_PERCENT) || check(parser, TOKEN_AMPERSAND) ||
-           check(parser, TOKEN_QUESTION) || check(parser, TOKEN_EXCLAMATION) ||
-           check(parser, TOKEN_BACKSLASH)) {
-        receiver = parseBinaryMessage(parser, receiver);
-    }
-    
-    // Parse any keyword messages
-    if (check(parser, TOKEN_KEYWORD)) {
-        receiver = parseKeywordMessage(parser, receiver);
-    }
-    
-    // Parse cascade if present
-    if (match(parser, TOKEN_SEMICOLON)) {
-        ASTNode* cascadeReceiver = receiver;
-        ASTNode** messages = (ASTNode**)malloc(sizeof(ASTNode*) * 8); // Initial capacity
-        if (messages == NULL) {
-            parserError(parser, "Out of memory.");
-            return NULL;
+    // Parse any unary, binary, or keyword messages
+    for (;;) {
+        // Parse unary message
+        if (match(parser, TOKEN_IDENTIFIER)) {
+            char* selector = extractTokenString(parser->previous);
+            receiver = createUnaryMessageNode(receiver, selector, 
+                                           parser->previous.line, parser->previous.column);
         }
-        
-        int messageCount = 0;
-        
-        // Parse cascade messages
-        do {
-            ASTNode* message = NULL;
+        // Parse binary message (specific tokens)
+        else if (match(parser, TOKEN_PLUS) || match(parser, TOKEN_MINUS) || 
+                 match(parser, TOKEN_STAR) || match(parser, TOKEN_SLASH) ||
+                 match(parser, TOKEN_LESS) || match(parser, TOKEN_GREATER) ||
+                 match(parser, TOKEN_EQUAL) || match(parser, TOKEN_AT) ||
+                 match(parser, TOKEN_COMMA) || match(parser, TOKEN_TILDE) ||
+                 match(parser, TOKEN_PERCENT) || match(parser, TOKEN_AMPERSAND) ||
+                 match(parser, TOKEN_QUESTION) || match(parser, TOKEN_EXCLAMATION) ||
+                 match(parser, TOKEN_BACKSLASH) || match(parser, TOKEN_BINARY_SELECTOR)) {
             
-            // Parse unary message
-            if (check(parser, TOKEN_IDENTIFIER) && 
-                parser->current.type != TOKEN_COLON) {
-                char* selector = extractTokenString(parser->current);
-                advance(parser); // Consume the selector
-                message = createUnaryMessageNode(NULL, selector, 
-                                             parser->previous.line, parser->previous.column);
-            }
-            // Parse binary message
-            else if (check(parser, TOKEN_BINARY_SELECTOR) || 
-                     check(parser, TOKEN_PLUS) || check(parser, TOKEN_MINUS) || 
-                     check(parser, TOKEN_STAR) || check(parser, TOKEN_SLASH) ||
-                     check(parser, TOKEN_LESS) || check(parser, TOKEN_GREATER) ||
-                     check(parser, TOKEN_EQUAL) || check(parser, TOKEN_AT) ||
-                     check(parser, TOKEN_COMMA) || check(parser, TOKEN_TILDE) ||
-                     check(parser, TOKEN_PERCENT) || check(parser, TOKEN_AMPERSAND) ||
-                     check(parser, TOKEN_QUESTION) || check(parser, TOKEN_EXCLAMATION) ||
-                     check(parser, TOKEN_BACKSLASH)) {
-                char* selector = extractTokenString(parser->current);
-                advance(parser); // Consume the selector
-                
-                ASTNode* argument = primary(parser);
-                
-                // Parse any unary messages sent to the argument
-                while (check(parser, TOKEN_IDENTIFIER) && 
-                       parser->current.type != TOKEN_COLON) {
-                    argument = parseUnaryMessage(parser, argument);
-                }
-                
-                message = createBinaryMessageNode(NULL, selector, argument, 
-                                               parser->previous.line, parser->previous.column);
-            }
-            // Parse keyword message
-            else if (check(parser, TOKEN_KEYWORD)) {
-                char selectorBuffer[256] = {0}; // Buffer for building the full selector
-                ASTNode** arguments = (ASTNode**)malloc(sizeof(ASTNode*) * 8); // Initial capacity
-                if (arguments == NULL) {
-                    for (int i = 0; i < messageCount; i++) freeASTNode(messages[i]);
-                    free(messages);
-                    parserError(parser, "Out of memory.");
-                    return NULL;
-                }
-                
-                int argumentCount = 0;
-                
-                // First keyword and argument
-                advance(parser); // Consume the keyword
-                strncat(selectorBuffer, parser->previous.start, parser->previous.length);
-                
-                // Parse the argument
-                ASTNode* argument = primary(parser);
-                
-                // Parse any unary messages sent to the argument
-                while (check(parser, TOKEN_IDENTIFIER) && 
-                       parser->current.type != TOKEN_COLON) {
-                    argument = parseUnaryMessage(parser, argument);
-                }
-                
-                // Parse any binary messages sent to the argument
-                while (check(parser, TOKEN_BINARY_SELECTOR) || 
-                       check(parser, TOKEN_PLUS) || check(parser, TOKEN_MINUS) || 
-                       check(parser, TOKEN_STAR) || check(parser, TOKEN_SLASH) ||
-                       check(parser, TOKEN_LESS) || check(parser, TOKEN_GREATER) ||
-                       check(parser, TOKEN_EQUAL) || check(parser, TOKEN_AT) ||
-                       check(parser, TOKEN_COMMA) || check(parser, TOKEN_TILDE) ||
-                       check(parser, TOKEN_PERCENT) || check(parser, TOKEN_AMPERSAND) ||
-                       check(parser, TOKEN_QUESTION) || check(parser, TOKEN_EXCLAMATION) ||
-                       check(parser, TOKEN_BACKSLASH)) {
-                    argument = parseBinaryMessage(parser, argument);
-                }
-                
-                arguments[argumentCount++] = argument;
-                
-                // Additional keywords and arguments
-                while (check(parser, TOKEN_KEYWORD)) {
-                    advance(parser); // Consume the keyword
-                    strncat(selectorBuffer, parser->previous.start, parser->previous.length);
-                    
-                    // Parse the argument
-                    argument = primary(parser);
-                    
-                    // Parse any unary messages sent to the argument
-                    while (check(parser, TOKEN_IDENTIFIER) && 
-                           parser->current.type != TOKEN_COLON) {
-                        argument = parseUnaryMessage(parser, argument);
-                    }
-                    
-                    // Parse any binary messages sent to the argument
-                    while (check(parser, TOKEN_BINARY_SELECTOR) || 
-                           check(parser, TOKEN_PLUS) || check(parser, TOKEN_MINUS) || 
-                           check(parser, TOKEN_STAR) || check(parser, TOKEN_SLASH) ||
-                           check(parser, TOKEN_LESS) || check(parser, TOKEN_GREATER) ||
-                           check(parser, TOKEN_EQUAL) || check(parser, TOKEN_AT) ||
-                           check(parser, TOKEN_COMMA) || check(parser, TOKEN_TILDE) ||
-                           check(parser, TOKEN_PERCENT) || check(parser, TOKEN_AMPERSAND) ||
-                           check(parser, TOKEN_QUESTION) || check(parser, TOKEN_EXCLAMATION) ||
-                           check(parser, TOKEN_BACKSLASH)) {
-                        argument = parseBinaryMessage(parser, argument);
-                    }
-                    
-                    // Grow the arguments array if needed
-                    if (argumentCount % 8 == 0) {
-                        ASTNode** newArgs = (ASTNode**)realloc(arguments, sizeof(ASTNode*) * (argumentCount + 8));
-                        if (newArgs == NULL) {
-                            for (int i = 0; i < argumentCount; i++) freeASTNode(arguments[i]);
-                            free(arguments);
-                            for (int i = 0; i < messageCount; i++) freeASTNode(messages[i]);
-                            free(messages);
-                            parserError(parser, "Out of memory.");
-                            return NULL;
-                        }
-                        arguments = newArgs;
-                    }
-                    
-                    arguments[argumentCount++] = argument;
-                }
-                
-                message = createKeywordMessageNode(NULL, selectorBuffer, arguments, argumentCount, 
-                                                parser->previous.line, parser->previous.column);
-            }
-            else {
-                parserError(parser, "Expected message selector in cascade.");
-                for (int i = 0; i < messageCount; i++) freeASTNode(messages[i]);
-                free(messages);
+            char* selector = extractTokenString(parser->previous);
+            ASTNode* argument = primary(parser);
+            int selectorLine = parser->previous.line;
+            int selectorColumn = parser->previous.column;
+            
+            receiver = createBinaryMessageNode(receiver, selector, argument, 
+                                            selectorLine, selectorColumn);
+        }
+        // Parse keyword message
+        else if (match(parser, TOKEN_KEYWORD)) {
+            char selectorBuffer[256] = {0}; // Buffer for building the full selector
+            ASTNode** arguments = (ASTNode**)malloc(sizeof(ASTNode*) * 8); // Initial capacity
+            if (arguments == NULL) {
+                parserError(parser, "Out of memory.");
                 return NULL;
             }
             
-            // Grow the messages array if needed
-            if (messageCount % 8 == 0) {
-                ASTNode** newMsgs = (ASTNode**)realloc(messages, sizeof(ASTNode*) * (messageCount + 8));
-                if (newMsgs == NULL) {
-                    for (int i = 0; i < messageCount; i++) freeASTNode(messages[i]);
-                    free(messages);
-                    parserError(parser, "Out of memory.");
-                    return NULL;
+            int argumentCount = 0;
+            
+            // First keyword and argument
+            strncat(selectorBuffer, parser->previous.start, parser->previous.length);
+            
+            // Parse the argument
+            ASTNode* argument = primary(parser);
+            arguments[argumentCount++] = argument;
+            
+            // Additional keywords and arguments
+            while (match(parser, TOKEN_KEYWORD)) {
+                strncat(selectorBuffer, parser->previous.start, parser->previous.length);
+                
+                // Parse the argument
+                argument = primary(parser);
+                
+                // Grow the arguments array if needed
+                if (argumentCount % 8 == 0) {
+                    ASTNode** newArgs = (ASTNode**)realloc(arguments, sizeof(ASTNode*) * (argumentCount + 8));
+                    if (newArgs == NULL) {
+                        for (int i = 0; i < argumentCount; i++) freeASTNode(arguments[i]);
+                        free(arguments);
+                        parserError(parser, "Out of memory.");
+                        return NULL;
+                    }
+                    arguments = newArgs;
                 }
-                messages = newMsgs;
+                
+                arguments[argumentCount++] = argument;
             }
             
-            messages[messageCount++] = message;
-        } while (match(parser, TOKEN_SEMICOLON));
-        
-        return createCascadeNode(cascadeReceiver, messages, messageCount, 
-                             parser->previous.line, parser->previous.column);
+            receiver = createKeywordMessageNode(receiver, selectorBuffer, arguments, argumentCount, 
+                                            parser->previous.line, parser->previous.column);
+        }
+        // Handle cascade (semicolon)
+        else if (match(parser, TOKEN_SEMICOLON)) {
+            ASTNode* cascadeReceiver = receiver;
+            ASTNode** messages = (ASTNode**)malloc(sizeof(ASTNode*) * 8); // Initial capacity
+            if (messages == NULL) {
+                parserError(parser, "Out of memory.");
+                return NULL;
+            }
+            
+            int messageCount = 0;
+            
+            // Parse cascade messages
+            do {
+                ASTNode* message = NULL;
+                
+                // Parse each message without receiver (it will be set in the cascade node)
+                if (match(parser, TOKEN_IDENTIFIER)) {
+                    char* selector = extractTokenString(parser->previous);
+                    message = createUnaryMessageNode(NULL, selector, 
+                                                  parser->previous.line, parser->previous.column);
+                }
+                else if (match(parser, TOKEN_PLUS) || match(parser, TOKEN_MINUS) || 
+                         match(parser, TOKEN_STAR) || match(parser, TOKEN_SLASH) ||
+                         match(parser, TOKEN_LESS) || match(parser, TOKEN_GREATER) ||
+                         match(parser, TOKEN_EQUAL) || match(parser, TOKEN_AT) ||
+                         match(parser, TOKEN_COMMA) || match(parser, TOKEN_TILDE) ||
+                         match(parser, TOKEN_PERCENT) || match(parser, TOKEN_AMPERSAND) ||
+                         match(parser, TOKEN_QUESTION) || match(parser, TOKEN_EXCLAMATION) ||
+                         match(parser, TOKEN_BACKSLASH) || match(parser, TOKEN_BINARY_SELECTOR)) {
+                    
+                    char* selector = extractTokenString(parser->previous);
+                    ASTNode* argument = primary(parser);
+                    
+                    message = createBinaryMessageNode(NULL, selector, argument, 
+                                                   parser->previous.line, parser->previous.column);
+                }
+                else if (match(parser, TOKEN_KEYWORD)) {
+                    // Handle keyword message in cascade
+                    char selectorBuffer[256] = {0};
+                    ASTNode** arguments = (ASTNode**)malloc(sizeof(ASTNode*) * 8);
+                    if (arguments == NULL) {
+                        for (int i = 0; i < messageCount; i++) freeASTNode(messages[i]);
+                        free(messages);
+                        parserError(parser, "Out of memory.");
+                        return NULL;
+                    }
+                    
+                    int argumentCount = 0;
+                    
+                    // First keyword and argument
+                    strncat(selectorBuffer, parser->previous.start, parser->previous.length);
+                    ASTNode* argument = primary(parser);
+                    arguments[argumentCount++] = argument;
+                    
+                    // Additional keywords and arguments
+                    while (match(parser, TOKEN_KEYWORD)) {
+                        strncat(selectorBuffer, parser->previous.start, parser->previous.length);
+                        argument = primary(parser);
+                        
+                        // Grow arguments if needed
+                        if (argumentCount % 8 == 0) {
+                            ASTNode** newArgs = (ASTNode**)realloc(arguments, sizeof(ASTNode*) * (argumentCount + 8));
+                            if (newArgs == NULL) {
+                                for (int i = 0; i < argumentCount; i++) freeASTNode(arguments[i]);
+                                free(arguments);
+                                for (int i = 0; i < messageCount; i++) freeASTNode(messages[i]);
+                                free(messages);
+                                parserError(parser, "Out of memory.");
+                                return NULL;
+                            }
+                            arguments = newArgs;
+                        }
+                        
+                        arguments[argumentCount++] = argument;
+                    }
+                    
+                    message = createKeywordMessageNode(NULL, selectorBuffer, arguments, argumentCount, 
+                                                    parser->previous.line, parser->previous.column);
+                }
+                else {
+                    parserError(parser, "Expected message selector in cascade.");
+                    for (int i = 0; i < messageCount; i++) freeASTNode(messages[i]);
+                    free(messages);
+                    return NULL;
+                }
+                
+                // Store the message
+                if (messageCount % 8 == 0 && messageCount > 0) {
+                    ASTNode** newMsgs = (ASTNode**)realloc(messages, sizeof(ASTNode*) * (messageCount + 8));
+                    if (newMsgs == NULL) {
+                        for (int i = 0; i < messageCount; i++) freeASTNode(messages[i]);
+                        free(messages);
+                        parserError(parser, "Out of memory.");
+                        return NULL;
+                    }
+                    messages = newMsgs;
+                }
+                
+                messages[messageCount++] = message;
+            } while (match(parser, TOKEN_SEMICOLON));
+            
+            // Create the cascade node
+            return createCascadeNode(cascadeReceiver, messages, messageCount, 
+                                 parser->previous.line, parser->previous.column);
+        }
+        else {
+            // No more messages to parse
+            break;
+        }
     }
     
     return receiver;
@@ -617,11 +561,20 @@ static ASTNode* expression(Parser* parser) {
         return createReturnNode(expr, parser->previous.line, parser->previous.column);
     }
     
-    return assignment(parser);
+    ASTNode* expr = assignment(parser);
+    
+    // Debug print to see the current token type after expression parsing
+    printf("After expression, current token type: %d\n", parser->current.type);
+    
+    return expr;
 }
 
 static ASTNode* statement(Parser* parser) {
     ASTNode* expr = expression(parser);
+    
+    // Debug print for statement parsing
+    printf("Parsed statement, current token type: %d\n", parser->current.type);
+    
     return expr;
 }
 
@@ -641,7 +594,9 @@ static ASTNode* blockBody(Parser* parser) {
         // If we've reached EOF after skipping periods, we're done
         if (check(parser, TOKEN_EOF)) break;
         
-        statements[statementCount++] = statement(parser);
+        // Parse the statement
+        ASTNode* expr = statement(parser);
+        statements[statementCount++] = expr;
         
         // Grow the statements array if needed
         if (statementCount % 8 == 0) {
@@ -655,17 +610,19 @@ static ASTNode* blockBody(Parser* parser) {
             statements = newStmts;
         }
         
-        // After each statement, we expect a period or EOF
-        if (!check(parser, TOKEN_PERIOD) && !check(parser, TOKEN_EOF)) {
+        // After each statement, we require a period (unless EOF)
+        if (check(parser, TOKEN_EOF)) break;
+        
+        // If next token is not a period, check if it's part of expression that needs period
+        if (!check(parser, TOKEN_PERIOD)) {
+            // Debug print to help diagnose the issue
+            printf("Error: Expected period, but got token type: %d\n", parser->current.type);
             parserErrorAtCurrent(parser, "Expected '.' after statement.");
             break;
         }
         
-        // Consume periods (but it's OK if we reach EOF)
-        while (match(parser, TOKEN_PERIOD));
-        
-        // If we've reached EOF after consuming periods, we're done
-        if (check(parser, TOKEN_EOF)) break;
+        // Consume the period
+        advance(parser);
     }
     
     // Create a block node without parameters

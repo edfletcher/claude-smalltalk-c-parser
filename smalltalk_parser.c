@@ -313,6 +313,7 @@ int main(int argc, char* argv[]) {
                 case TOKEN_CHAR: strcpy(tokenTypeName, "CHAR"); break;
                 case TOKEN_STRING: strcpy(tokenTypeName, "STRING"); break;
                 case TOKEN_SYMBOL: strcpy(tokenTypeName, "SYMBOL"); break;
+                case TOKEN_HASH_PAREN: strcpy(tokenTypeName, "HASH_PAREN"); break;
                 case TOKEN_NIL: strcpy(tokenTypeName, "NIL"); break;
                 case TOKEN_TRUE: strcpy(tokenTypeName, "TRUE"); break;
                 case TOKEN_FALSE: strcpy(tokenTypeName, "FALSE"); break;
